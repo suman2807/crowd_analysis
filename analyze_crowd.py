@@ -14,6 +14,23 @@ import math
 # Load models
 @st.cache_resource
 def load_models():
+    """Load and initialize various machine learning models required for
+    different tasks.
+
+    This function initializes three models: 1. A YOLO object detection model
+    for general object detection. 2. A YOLO pose estimation model for
+    detecting human poses. 3. An LSTM-based crowd behavior prediction model,
+    which is loaded from a file.  If the LSTM model fails to load due to an
+    exception, it catches the error and displays an error message using
+    Streamlit's st.error function. In this case, the function returns None
+    for all models.
+
+    Returns:
+        tuple: A tuple containing the initialized YOLO object detection model,
+            pose estimation model, and LSTM crowd behavior prediction model.
+            If any model fails to load, returns None for that model.
+    """
+
     yolo_model = YOLO("yolov8n.pt")  # Object detection model
     pose_model = YOLO("yolov8n-pose.pt")  # Pose detection model
     try:
@@ -55,6 +72,25 @@ class QLearningAgent:
         self.epsilon = exploration_rate
 
     def get_state(self, density, speed, variance, movement_uniformity, pose_variance):
+        """Get a state tuple based on input parameters.
+
+        This function takes in various parameters related to an entity's state
+        and binarizes them into integer values. The bins are determined by
+        scaling the inputs down to a range and then dividing by a fixed step
+        size.
+
+        Args:
+            density (float): The density value of the entity.
+            speed (float): The speed of the entity.
+            variance (float): The variance of the entity's state.
+            movement_uniformity (float): The uniformity of the entity's movement.
+            pose_variance (float): The variance of the entity's pose.
+
+        Returns:
+            tuple: A tuple containing five binarized values representing the entity's
+                state.
+        """
+
         density_bin = int(min(density * 1000, 50) // 10)
         speed_bin = int(min(speed, 50) // 10)
         variance_bin = int(min(variance, 100) // 20)
@@ -66,6 +102,21 @@ class QLearningAgent:
         return self.q_table.get((state, action), 0.0)
 
     def choose_action(self, state):
+        """Choose an action based on the current state using epsilon-greedy
+        strategy.
+
+        This function selects an action randomly with probability `epsilon` to
+        explore, otherwise, it chooses the action with the highest Q-value to
+        exploit. The Q-values are obtained from the get_q_value method for each
+        possible action in the given state.
+
+        Args:
+            state (object): The current state of the environment.
+
+        Returns:
+            object: The chosen action.
+        """
+
         if random.random() < self.epsilon:
             return random.choice(self.actions)
         else:
@@ -73,6 +124,22 @@ class QLearningAgent:
             return self.actions[np.argmax(q_values)]
 
     def update_q_table(self, state, action, reward, next_state):
+        """Update the Q-table based on the current and next states, actions, and
+        rewards.
+
+        This method updates the Q-value for a given state-action pair using the
+        Q-learning formula. It calculates the new Q-value by considering the old
+        Q-value, the learning rate (lr), the immediate reward, the discount
+        factor (gamma), and the maximum Q-value of the next state across all
+        possible actions.
+
+        Args:
+            state: The current state.
+            action: The action taken in the current state.
+            reward: The immediate reward received after taking the given action.
+            next_state: The resulting state after executing the action.
+        """
+
         old_q = self.get_q_value(state, action)
         next_max_q = max([self.get_q_value(next_state, a) for a in self.actions])
         new_q = old_q + self.lr * (reward + self.gamma * next_max_q - old_q)
@@ -86,6 +153,25 @@ class DecisionAgent:
         self.escalation_cooldown = 300  # Frames (e.g., 10 seconds at 30 FPS)
 
     def decide_action(self, rule_behavior, lstm_behavior, frame_count):
+        """Decide the appropriate action based on rule behavior, LSTM behavior, and
+        frame count.
+
+        This function evaluates the current behavior from either the LSTM or
+        rule system, and determines an appropriate action to take. It prevents
+        frequent escalations by checking if the last escalation was too recent.
+        Depending on the behavior, it updates the alert level and returns a
+        corresponding action message.
+
+        Args:
+            rule_behavior (str): The behavior determined by the rules.
+            lstm_behavior (str): The behavior determined by the LSTM model.
+            frame_count (int): The current frame count for tracking time since last escalation.
+
+        Returns:
+            str or None: A string describing the action to take, or None if no
+                action is needed.
+        """
+
         current_behavior = lstm_behavior if lstm_behavior != "Unknown" else rule_behavior
         if frame_count - self.last_escalation_frame < self.escalation_cooldown:
             return None  # Prevent frequent escalations
@@ -130,6 +216,27 @@ input_option = st.radio("Select Input Source:", ("Real-Time Drone/CCTV Feed", "P
 
 # Function to generate heatmap
 def generate_heatmap(frame, centroids, intensity_factor=50):
+    """Generate a heatmap based on given centroids and frame dimensions.
+
+    This function creates an empty heatmap image of the same size as the
+    input frame, draws circles at specified centroid locations, applies
+    Gaussian blur to smooth out the intensities, clips the values between 0
+    and 255, and converts the grayscale heatmap to a color map using the Jet
+    colormap.
+
+    Args:
+        frame (numpy.ndarray): The input image on which the heatmap will be drawn.
+        centroids (list of tuples): A list of (x, y) coordinates where circles will be drawn.
+        intensity_factor (int?): The factor by which the intensity at each centroid
+            is multiplied. Defaults to 50.
+
+    Returns:
+        numpy.ndarray: The colorized heatmap image with a Jet colormap applied.
+
+    Note:
+        Ensure that `cv2` (OpenCV) library is installed and imported.
+    """
+
     heatmap = np.zeros((frame.shape[0], frame.shape[1]), dtype=np.float32)
     for x, y in centroids:
         cv2.circle(heatmap, (x, y), 30, intensity_factor, -1)
@@ -140,6 +247,38 @@ def generate_heatmap(frame, centroids, intensity_factor=50):
 
 # Function to process frame with pose detection
 def process_frame(frame, prev_positions, density_history, speed_history, pose_history, time_history, frame_count, rl_agent, thresholds):
+    """Analyzes crowd behavior based on video frame data.
+
+    Args:
+        frame (numpy.ndarray): The current video frame.
+        centroids (list of tuples): Positions of detected people in the form (x, y).
+        movement_vectors (list of tuples): Directional vectors indicating motion of each person.
+
+    Returns:
+        annotated_frame (numpy.ndarray): The input frame with annotations added
+            for analysis.
+        num_people (int): Total number of people detected in the current frame.
+        density (float): Density of people per 10,000 pixels in the frame.
+        avg_speed (float): Average speed of moving people in pixels/frame.
+        pose_variance (float): Variance in body posture among individuals.
+        rule_behavior (str): Detected crowd behavior based on rules ('Rule-
+            Based').
+        lstm_behavior (str): Predicted crowd behavior using LSTM model ('LSTM
+            Pred').
+        fig (matplotlib.figure.Figure): Plot showing trends over time for
+            density, speed, and pose variance.
+        frame_count (int): Total number of frames processed so far.
+        This function performs a comprehensive analysis of crowd behavior by
+            extracting
+        features from the input video frame such as people detection, movement
+            vectors,
+        and posture variations. It then uses both rule-based and LSTM models to
+            predict
+        potential risks like aggressive behavior or stampedes. The results are
+            visualized
+        through plots and annotations added to the original frame.
+    """
+
     # Object detection
     results = yolo_model(frame)
     filtered_boxes = [box for box in results[0].boxes if int(box.cls) == 0]  # Class 0 is "person"
